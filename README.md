@@ -46,7 +46,7 @@ Measured on a MacBook Pro M5 (10-core GPU, 32 GB), YOLO12s, 896 px.
 
 **Fidelity.** On a document layout test set (200 pages, 1771 boxes, 6 classes, IoU > 0.5), the same trained weights give identical results in Ultralytics (PyTorch MPS), MLX fp32 and MLX bf16: 1701 / 1771 correct boxes in each case. On COCO weights the raw outputs match Ultralytics to 0.0016 on scores and about 1 px on boxes.
 
-**Scales.** All five scales (n, s, m, l, x) were checked against the official COCO weights at 640 px: parameter counts match Ultralytics (2.6M, 9.3M, 20.3M, 26.6M, 59.4M) and outputs agree to within 0.011 on scores and 3 px on boxes. Only `s` has been trained and evaluated end to end.
+**Scales.** All five scales (n, s, m, l, x) were checked against the official COCO weights at 640 px: parameter counts match Ultralytics (2.6M, 9.3M, 20.3M, 26.6M, 59.4M) and outputs agree to within 0.011 on scores and 3 px on boxes. Forward and backward also run for `m` and `l` (bf16, `mx.compile`: 0.55 s/it for `m` at batch 4 / 640 px, 0.40 s/it for `l` at batch 2 / 640 px). Only `s` has been trained and evaluated end to end. `l` and `x` need a lot of memory: `l` in fp32 at batch 4 / 896 px exhausted 32 GB.
 
 **Inference**, per page, model only: PyTorch MPS 25.3 ms, MLX fp32 30.9 ms, MLX bf16 23.1 ms.
 
