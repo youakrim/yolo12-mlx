@@ -23,17 +23,25 @@ scripts/setup.sh    # clones yolo-mlx at the right commit, applies the patch, in
 
 Python 3.10+, `mlx>=0.30.3,<0.31`. Apple silicon only.
 
+## Pretrained weights
+
+The official YOLO12 COCO weights for all five scales (n, s, m, l, x), already converted: [huggingface.co/youakrim/yolo12-mlx](https://huggingface.co/youakrim/yolo12-mlx).
+
+```sh
+hf download youakrim/yolo12-mlx yolo12s-coco.npz --local-dir .
+```
+
 ## Use
 
 ```sh
-# 1. Convert a checkpoint (any size, any number of classes)
+# 1. Convert your own Ultralytics checkpoint (any size, any number of classes)
 python -m yolo12mlx.convert best.pt best.npz
 
 # 2. Detect
 python -m yolo12mlx.predict best.npz page.jpg --nc 6 --imgsz 896 --bf16
 
 # 3. Fine-tune from converted COCO weights
-python -m yolo12mlx.train --data data.yaml --weights yolo12s.npz --nc 6 --imgsz 896 --batch 6 --epochs 3
+python -m yolo12mlx.train --data data.yaml --weights yolo12s-coco.npz --nc 6 --imgsz 896 --batch 6 --epochs 3
 ```
 
 Pass `--scale n|s|m|l|x` to `predict`, `train` and `bench` (default `s`). Training data uses the YOLO layout (`images/<split>`, `labels/<split>`, `data.yaml` with `nc` and `names`).
