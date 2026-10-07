@@ -1,0 +1,359 @@
+diff --git a/src/yolo26mlx/cfg/models/12/yolo12.yaml b/src/yolo26mlx/cfg/models/12/yolo12.yaml
+new file mode 100644
+index 0000000..5033523
+--- /dev/null
++++ b/src/yolo26mlx/cfg/models/12/yolo12.yaml
+@@ -0,0 +1,41 @@
++end2end: False
++reg_max: 16
++
++
++nc: 80
++scales:
++  n: [0.50, 0.25, 1024]
++  s: [0.50, 0.50, 1024]
++  m: [0.50, 1.00, 512]
++  l: [1.00, 1.00, 512]
++  x: [1.00, 1.50, 512]
++
++backbone:
++  - [-1, 1, Conv, [64, 3, 2]]
++  - [-1, 1, Conv, [128, 3, 2]]
++  - [-1, 2, C3k2, [256, False, 0.25]]
++  - [-1, 1, Conv, [256, 3, 2]]
++  - [-1, 2, C3k2, [512, False, 0.25]]
++  - [-1, 1, Conv, [512, 3, 2]]
++  - [-1, 4, A2C2f, [512, True, 4]]
++  - [-1, 1, Conv, [1024, 3, 2]]
++  - [-1, 4, A2C2f, [1024, True, 1]]
++
++head:
++  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]
++  - [[-1, 6], 1, Concat, [1]]
++  - [-1, 2, A2C2f, [512, False, -1]]
++
++  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]
++  - [[-1, 4], 1, Concat, [1]]
++  - [-1, 2, A2C2f, [256, False, -1]]
++
++  - [-1, 1, Conv, [256, 3, 2]]
++  - [[-1, 11], 1, Concat, [1]]
++  - [-1, 2, A2C2f, [512, False, -1]]
++
++  - [-1, 1, Conv, [512, 3, 2]]
++  - [[-1, 8], 1, Concat, [1]]
++  - [-1, 2, C3k2, [1024, True]]
++
++  - [[14, 17, 20], 1, Detect, [nc]]
+diff --git a/src/yolo26mlx/data/coco_dataset.py b/src/yolo26mlx/data/coco_dataset.py
+index eb67d51..d792160 100644
+--- a/src/yolo26mlx/data/coco_dataset.py
++++ b/src/yolo26mlx/data/coco_dataset.py
+@@ -13,6 +13,7 @@ from collections.abc import Iterator
+ from pathlib import Path
+ 
+ import mlx.core as mx
++import os
+ import numpy as np
+ from PIL import Image
+ 
+@@ -441,7 +442,7 @@ class COCODataset:
+         """Return number of images in the dataset."""
+         return len(self.images)
+ 
+-    def __getitem__(self, idx: int) -> tuple[mx.array, dict]:
++    def __getitem__(self, idx: int, _np_only: bool = False) -> tuple[mx.array, dict]:
+         """Get image and annotations by index.
+ 
+         Args:
+@@ -591,6 +592,8 @@ class COCODataset:
+             self._rasterize_masks(annotation)
+ 
+         # Convert to MLX array (float32, normalized to [0, 1])
++        if _np_only:
++            return img_np, annotation
+         img_array = mx.array(img_np.astype(np.float32) / 255.0)
+ 
+         return img_array, annotation
+@@ -1121,21 +1124,26 @@ class COCODataset:
+         if self.rect:
+             batch_size = 1
+ 
+-        for i in range(0, len(indices), batch_size):
+-            batch_indices = indices[i : i + batch_size]
+-
+-            images = []
+-            annotations = []
+-
+-            for idx in batch_indices:
+-                img, ann = self[idx]
+-                images.append(img)
+-                annotations.append(ann)
+-
+-            # Stack images into batch
+-            batch_images = mx.stack(images, axis=0)
+-
+-            yield batch_images, annotations
++        from concurrent.futures import ThreadPoolExecutor
++
++        n_workers = int(os.environ.get("YOLO_LOADER_WORKERS", "6"))
++        chunks = [indices[i : i + batch_size] for i in range(0, len(indices), batch_size)]
++
++        def build(chunk):
++            out = [self.__getitem__(idx, _np_only=True) for idx in chunk]
++            imgs = np.stack([o[0] for o in out]).astype(np.float32) / 255.0
++            return imgs, [o[1] for o in out]
++
++        with ThreadPoolExecutor(n_workers) as pool:
++            futs = [pool.submit(build, c) for c in chunks[: n_workers * 2]]
++            nxt = len(futs)
++            for k in range(len(chunks)):
++                imgs, annotations = futs[k].result()
++                futs[k] = None
++                if nxt < len(chunks):
++                    futs.append(pool.submit(build, chunks[nxt]))
++                    nxt += 1
++                yield mx.array(imgs), annotations
+ 
+ 
+ class COCOResultsWriter:
+diff --git a/src/yolo26mlx/engine/trainer.py b/src/yolo26mlx/engine/trainer.py
+index fae5f2b..90f1551 100644
+--- a/src/yolo26mlx/engine/trainer.py
++++ b/src/yolo26mlx/engine/trainer.py
+@@ -11,6 +11,7 @@ import logging
+ import math
+ import re
+ import subprocess
++import os
+ import time
+ import zipfile
+ from pathlib import Path
+@@ -39,6 +40,19 @@ from yolo26mlx.utils.metrics import (
+ logger = logging.getLogger(__name__)
+ 
+ 
++
++class _PlainDetectLoss:
++    """v8DetectionLoss for non-end2end (DFL, NMS-based) heads such as YOLO12."""
++
++    def __init__(self, model):
++        from yolo26mlx.utils.loss import v8DetectionLoss
++
++        self.loss = v8DetectionLoss(model, max_boxes=32)
++
++    def __call__(self, preds, batch):
++        return self.loss(preds, batch)
++
++
+ class ModelEMA:
+     """Exponential Moving Average of model weights.
+ 
+@@ -591,6 +605,8 @@ class Trainer:
+             self.loss_fn = E2ELoss(model=self.model, loss_fn=v8SegmentationLoss)
+         elif self.task == "pose":
+             self.loss_fn = E2ELoss(model=self.model, loss_fn=v8PoseLoss)
++        elif not getattr(self.model, "end2end", True):
++            self.loss_fn = _PlainDetectLoss(self.model)
+         else:
+             self.loss_fn = E2ELoss(model=self.model)
+ 
+@@ -608,12 +624,27 @@ class Trainer:
+     def _create_compiled_step(self):
+         """Create compute_grad and step closures for the training loop."""
+ 
++        prec = os.environ.get("YOLO_PRECISION", "bf16").lower()
++        half = {"bf16": mx.bfloat16, "fp16": mx.float16}.get(prec)
++        use_compile = os.environ.get("YOLO_COMPILE", "1") == "1"
++        to_f32 = lambda a: a.astype(mx.float32) if isinstance(a, mx.array) else a
++
+         def compute_grad(images, targets):
+             """Compute forward pass loss and parameter gradients."""
+ 
+             def loss_fn(model):
+                 """Forward pass through model and loss, returning scalar loss."""
+-                preds = model(images)
++                if half is None:
++                    preds = model(images)
++                else:
++                    # fp32 master weights; compute in half precision, loss in fp32
++                    orig = model.trainable_parameters()
++                    model.update(tree_map(lambda a: a.astype(half), orig))
++                    try:
++                        preds = model(images.astype(half))
++                    finally:
++                        model.update(orig)
++                    preds = tree_map(to_f32, preds)
+                 loss, loss_items = self.loss_fn(preds, targets)
+                 return loss
+ 
+@@ -621,6 +652,10 @@ class Trainer:
+             loss, grads = loss_and_grad_fn(self.model)
+             return loss, grads
+ 
++        if use_compile:
++            _state = [self.model.state]
++            compute_grad = mx.compile(compute_grad, inputs=_state, outputs=_state)
++
+         self._compute_grad_fn = compute_grad
+ 
+         def step(images, targets):
+@@ -820,8 +855,8 @@ class Trainer:
+ 
+         # Get dataloader
+         dataloader = dataset.get_dataloader(batch_size=batch_size, shuffle=True)
+-        batches = list(dataloader)  # materialize to know total count
+-        num_total = len(batches)
++        batches = dataloader
++        num_total = -(-len(dataset) // batch_size)
+         nb = num_total  # batches per epoch
+ 
+         # Progress logging: log every N batches so output stays readable
+diff --git a/src/yolo26mlx/nn/modules/attention.py b/src/yolo26mlx/nn/modules/attention.py
+index 4a9c71e..83bc8a4 100644
+--- a/src/yolo26mlx/nn/modules/attention.py
++++ b/src/yolo26mlx/nn/modules/attention.py
+@@ -166,7 +166,7 @@ class AAttn(nn.Module):
+         self.qkv = Conv(dim, all_head_dim * 3, 1, act=False)
+         self.proj = Conv(all_head_dim, dim, 1, act=False)
+         # 7x7 kernel, groups=dim (depthwise) for positional encoding - matches ultralytics
+-        self.pe = Conv(all_head_dim, dim, 7, 1, 3, g=dim, act=False)
++        self.pe = Conv(all_head_dim, dim, 7, 1, 3, g=dim, act=False, bias=True)
+ 
+     def __call__(self, x: mx.array) -> mx.array:
+         """Forward pass with area-based attention.
+diff --git a/src/yolo26mlx/nn/modules/conv.py b/src/yolo26mlx/nn/modules/conv.py
+index c308c7d..b57d37a 100644
+--- a/src/yolo26mlx/nn/modules/conv.py
++++ b/src/yolo26mlx/nn/modules/conv.py
+@@ -38,6 +38,39 @@ def autopad(k: int | tuple[int, int], p: int | None = None, d: int = 1) -> int |
+     return p
+ 
+ 
++
++_DW_OPS = {}
++
++
++def _dw_op(k: int, c: int):
++    """Depthwise conv with a faster weight gradient (MLX's native one is ~30x its forward)."""
++    key = (k, c)
++    if key in _DW_OPS:
++        return _DW_OPS[key]
++    p = k // 2
++
++    @mx.custom_function
++    def f(x, w):
++        return mx.conv2d(x, w, padding=p, groups=c)
++
++    @f.vjp
++    def f_vjp(primals, cot, out):
++        x, w = primals
++        cot = cot.astype(x.dtype)
++        dx = mx.conv2d(cot, w[:, ::-1, ::-1, :], padding=p, groups=c)
++        h, wd = x.shape[1:3]
++        xp = mx.pad(x, [(0, 0), (p, p), (p, p), (0, 0)])
++        rows = [
++            mx.stack([(xp[:, i : i + h, j : j + wd, :] * cot).sum(axis=(0, 1, 2)) for j in range(k)], axis=0)
++            for i in range(k)
++        ]
++        dw = mx.transpose(mx.stack(rows, axis=0), (2, 0, 1))[..., None]
++        return dx.astype(x.dtype), dw.astype(w.dtype)
++
++    _DW_OPS[key] = f
++    return f
++
++
+ class Conv(nn.Module):
+     """Standard convolution with BatchNorm and activation.
+ 
+@@ -57,6 +90,7 @@ class Conv(nn.Module):
+         g: int = 1,
+         d: int = 1,
+         act: bool | nn.Module = True,
++        bias: bool = False,
+     ):
+         """Initialize Conv layer.
+ 
+@@ -71,6 +105,9 @@ class Conv(nn.Module):
+             act: Activation (True=SiLU, False=Identity, or nn.Module instance)
+         """
+         super().__init__()
++        self._dw = (g == c1 == c2 and k in (3, 5, 7) and s == 1 and d == 1 and p is None)
++        self._dw_k = k
++        self._dw_c = c1
+ 
+         # MLX Conv2d supports: in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias
+         self.conv = nn.Conv2d(
+@@ -81,7 +118,7 @@ class Conv(nn.Module):
+             padding=autopad(k, p, d),
+             dilation=d,
+             groups=g,
+-            bias=False,  # BatchNorm handles bias
++            bias=bias,  # BatchNorm handles bias unless the checkpoint carries one
+         )
+         # MLX BatchNorm: eps=1e-3 and momentum=0.03 to match PyTorch's initialize_weights()
+         # (PyTorch overrides all BN layers after construction in torch_utils.py L463-471)
+@@ -104,7 +141,12 @@ class Conv(nn.Module):
+         Returns:
+             Output tensor (B, H', W', C2) after convolution, batch norm, and activation.
+         """
+-        x = self.conv(x)
++        if self._dw:
++            x = _dw_op(self._dw_k, self._dw_c)(x, self.conv.weight)
++            if "bias" in self.conv:
++                x = x + self.conv.bias
++        else:
++            x = self.conv(x)
+         x = self.bn(x)
+         if self.act is not None:
+             x = self.act(x)
+diff --git a/src/yolo26mlx/utils/loss.py b/src/yolo26mlx/utils/loss.py
+index 1edff0a..dc1138f 100644
+--- a/src/yolo26mlx/utils/loss.py
++++ b/src/yolo26mlx/utils/loss.py
+@@ -235,7 +235,7 @@ class DFLoss:
+         loss_l = -mx.take_along_axis(log_softmax, tl_expanded, axis=-1).squeeze(-1)  # (N,)
+         loss_r = -mx.take_along_axis(log_softmax, tr_expanded, axis=-1).squeeze(-1)  # (N,)
+ 
+-        return (loss_l * wl + loss_r * wr).mean(axis=-1, keepdims=True)
++        return loss_l * wl + loss_r * wr
+ 
+ 
+ class BboxLoss:
+diff --git a/src/yolo26mlx/utils/tal.py b/src/yolo26mlx/utils/tal.py
+index 921745b..1255cd6 100644
+--- a/src/yolo26mlx/utils/tal.py
++++ b/src/yolo26mlx/utils/tal.py
+@@ -193,27 +193,12 @@ class TaskAlignedAssigner:
+         # gt_labels: (B, M, 1) -> indices into pd_scores along class dim
+         gt_labels_int = gt_labels.squeeze(-1).astype(mx.int32)  # (B, M)
+ 
+-        # Expand gt_labels to match anchor dimension for gathering
+-        # gt_labels_expanded: (B, M, N) - same class index repeated for all anchors
+-        gt_labels_expanded = mx.broadcast_to(
+-            mx.expand_dims(gt_labels_int, -1),
+-            (self.bs, self.n_max_boxes, na),  # (B, M, 1)
+-        )
+-
+-        # Expand pd_scores to match GT dimension for gathering
+-        # pd_scores: (B, N, C) -> (B, 1, N, C) -> (B, M, N, C)
+-        pd_scores_expanded = mx.broadcast_to(
+-            mx.expand_dims(pd_scores, 1),  # (B, 1, N, C)
+-            (self.bs, self.n_max_boxes, na, self.num_classes),
+-        )
+-
+-        # Gather scores using take_along_axis
+-        # We need to select the score at gt_labels_expanded[b,m,n] from pd_scores_expanded[b,m,n,:]
++        # Gather the GT-class score per anchor without materialising (B, M, N, C)
+         bbox_scores = mx.take_along_axis(
+-            pd_scores_expanded,
+-            mx.expand_dims(gt_labels_expanded, -1),
+-            axis=-1,  # (B, M, N, 1)
+-        ).squeeze(-1)  # (B, M, N)
++            mx.transpose(pd_scores, (0, 2, 1)),  # (B, C, N)
++            mx.expand_dims(gt_labels_int, -1),  # (B, M, 1)
++            axis=1,
++        )  # (B, M, N)
+ 
+         # Apply mask - zero out invalid GT positions
+         mask_gt_expanded = mx.broadcast_to(mask_gt, (self.bs, self.n_max_boxes, na))

@@ -1,0 +1,14 @@
+[project]
+name = "yolo12mlx"
+version = "0.1.0"
+description = "YOLO12 for Apple MLX: weight conversion, training and inference on top of a patched yolo-mlx"
+requires-python = ">=3.10"
+license = { text = "AGPL-3.0-or-later" }
+authors = [{ name = "Yanis Ouakrim" }]
+dependencies = ["mlx>=0.30.3,<0.31", "numpy", "opencv-python"]
+
+[project.optional-dependencies]
+convert = ["torch", "ultralytics"]
+
+[tool.setuptools]
+packages = ["yolo12mlx"]
