@@ -25,10 +25,10 @@ Python 3.10+, `mlx>=0.30.3,<0.31`. Apple silicon only.
 
 ## Pretrained weights
 
-The official YOLO12 COCO weights for all five scales (n, s, m, l, x), already converted: [huggingface.co/youakrim/yolo12-mlx](https://huggingface.co/youakrim/yolo12-mlx).
+The official YOLO12 COCO weights for all five scales (n, s, m, l, x), already converted: the collection [YOLO12 for MLX](https://huggingface.co/collections/youakrim/yolo12-for-mlx-6ac659ef0a06781003d1d3cc), one repo per scale (`youakrim/yolo12{n,s,m,l,x}-mlx`), each with its COCO val2017 results (MLX vs PyTorch).
 
 ```sh
-hf download youakrim/yolo12-mlx yolo12s-coco.npz --local-dir .
+hf download youakrim/yolo12s-mlx yolo12s-coco.npz --local-dir .
 ```
 
 ## Use
