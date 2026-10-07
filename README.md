@@ -36,7 +36,7 @@ python -m yolo12mlx.predict best.npz page.jpg --nc 6 --imgsz 896 --bf16
 python -m yolo12mlx.train --data data.yaml --weights yolo12s.npz --nc 6 --imgsz 896 --batch 6 --epochs 3
 ```
 
-Training data uses the YOLO layout (`images/<split>`, `labels/<split>`, `data.yaml` with `nc` and `names`). Only the `s` scale has been tested.
+Pass `--scale n|s|m|l|x` to `predict`, `train` and `bench` (default `s`). Training data uses the YOLO layout (`images/<split>`, `labels/<split>`, `data.yaml` with `nc` and `names`).
 
 Environment variables read by the trainer: `YOLO_PRECISION` (`bf16` default, `fp16`, `fp32`), `YOLO_COMPILE` (`1` default), `YOLO_LOADER_WORKERS` (default 6).
 
@@ -45,6 +45,8 @@ Environment variables read by the trainer: `YOLO_PRECISION` (`bf16` default, `fp
 Measured on a MacBook Pro M5 (10-core GPU, 32 GB), YOLO12s, 896 px.
 
 **Fidelity.** On a document layout test set (200 pages, 1771 boxes, 6 classes, IoU > 0.5), the same trained weights give identical results in Ultralytics (PyTorch MPS), MLX fp32 and MLX bf16: 1701 / 1771 correct boxes in each case. On COCO weights the raw outputs match Ultralytics to 0.0016 on scores and about 1 px on boxes.
+
+**Scales.** All five scales (n, s, m, l, x) were checked against the official COCO weights at 640 px: parameter counts match Ultralytics (2.6M, 9.3M, 20.3M, 26.6M, 59.4M) and outputs agree to within 0.011 on scores and 3 px on boxes. Only `s` has been trained and evaluated end to end.
 
 **Inference**, per page, model only: PyTorch MPS 25.3 ms, MLX fp32 30.9 ms, MLX bf16 23.1 ms.
 
@@ -64,6 +66,7 @@ End to end with the real loss, optimizer and data loader: about 1.15 to 1.2 s/it
 - Trainer uses the plain `v8DetectionLoss` for non-end-to-end models.
 - `DFLoss` returns the right shape; `tal.py` gather rewritten to avoid a `(B, M, N, C)` broadcast.
 - `Conv` and `AAttn.pe` accept a bias, as in the Ultralytics checkpoints.
+- `A2C2f` gets the residual layer-scale (`gamma`) and `mlp_ratio` 1.2 for the `l` and `x` scales, as in Ultralytics.
 - Depthwise convolutions use a custom VJP: MLX's native weight gradient for depthwise convolutions is about 30x its forward pass.
 - The training step is `mx.compile`d, with bf16 compute on fp32 master weights and the loss in fp32.
 - The data loader is lazy and threaded; upstream loaded the whole epoch into memory before the first step.
@@ -72,7 +75,8 @@ End to end with the real loss, optimizer and data loader: about 1.15 to 1.2 s/it
 
 - Training quality has not been validated against PyTorch. Inference parity is verified; a full training recipe on MLX (and its accuracy) is not.
 - bf16 training is only checked for a decreasing loss over a short run.
-- YOLO12s only, detection only.
+- Training and the end-to-end layout evaluation were only done with YOLO12s; m, l and x are verified for weight loading and forward parity only.
+- Detection only.
 
 ## License
 

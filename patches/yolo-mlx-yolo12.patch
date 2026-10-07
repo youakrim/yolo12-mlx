@@ -307,6 +307,21 @@ index c308c7d..b57d37a 100644
          x = self.bn(x)
          if self.act is not None:
              x = self.act(x)
+diff --git a/src/yolo26mlx/nn/tasks.py b/src/yolo26mlx/nn/tasks.py
+index 9cea66a..22800c6 100644
+--- a/src/yolo26mlx/nn/tasks.py
++++ b/src/yolo26mlx/nn/tasks.py
+@@ -431,6 +431,10 @@ def parse_model(cfg: dict, ch: list[int], verbose: bool = True) -> tuple[ModuleL
+                 args.insert(2, n_)
+                 n_ = 1
+ 
++            # YOLO12 l/x: residual layer-scale (gamma) and mlp_ratio 1.2 in A2C2f
++            if m is A2C2f and scale in "lx":
++                args.extend((True, 1.2))
++
+             # Special handling for C3k2 - enable c3k for larger models
+             if m is C3k2 and scale in "mlx":
+                 if len(args) >= 4:
 diff --git a/src/yolo26mlx/utils/loss.py b/src/yolo26mlx/utils/loss.py
 index 1edff0a..dc1138f 100644
 --- a/src/yolo26mlx/utils/loss.py

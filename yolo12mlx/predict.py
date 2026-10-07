@@ -41,8 +41,8 @@ def nms(boxes, scores, iou_thr):
 
 
 class Detector:
-    def __init__(self, weights: str, nc: int, bf16: bool = False, imgsz: int = 896):
-        self.model = build(nc)
+    def __init__(self, weights: str, nc: int, bf16: bool = False, imgsz: int = 896, scale: str = "s"):
+        self.model = build(nc, scale)
         missing, _ = load_npz(self.model, weights)
         self.model.eval()
         self.bf16, self.imgsz, self.nc = bf16, imgsz, nc
@@ -77,10 +77,10 @@ class Detector:
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("weights"); ap.add_argument("image")
-    ap.add_argument("--nc", type=int, default=80); ap.add_argument("--imgsz", type=int, default=896)
+    ap.add_argument("--nc", type=int, default=80); ap.add_argument("--scale", default="s", choices=list("nsmlx")); ap.add_argument("--imgsz", type=int, default=896)
     ap.add_argument("--conf", type=float, default=0.25); ap.add_argument("--bf16", action="store_true")
     a = ap.parse_args()
-    det = Detector(a.weights, a.nc, a.bf16, a.imgsz)
+    det = Detector(a.weights, a.nc, a.bf16, a.imgsz, a.scale)
     det(a.image)  # warm-up
     t = time.perf_counter(); res = det(a.image, a.conf); dt = time.perf_counter() - t
     for r in res:

@@ -21,8 +21,8 @@ def timeit(f, n=6):
     return (time.time() - t) / n
 
 
-def run(label, batch, size, dtype=None, compile_=False, nc=6):
-    m = build(nc); init_cls_bias(m, nc); m.train()
+def run(label, batch, size, dtype=None, compile_=False, nc=6, scale="s"):
+    m = build(nc, scale); init_cls_bias(m, nc); m.train()
     x = mx.random.uniform(shape=(batch, size, size, 3))
     if dtype is not None:
         m.apply(lambda a: a.astype(dtype)); x = x.astype(dtype)
@@ -50,8 +50,9 @@ def run(label, batch, size, dtype=None, compile_=False, nc=6):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--batch", type=int, default=6); ap.add_argument("--imgsz", type=int, default=896)
+    ap.add_argument("--scale", default="s", choices=list("nsmlx"))
     a = ap.parse_args()
-    run("fp32 eager", a.batch, a.imgsz)
-    run("fp32 compile", a.batch, a.imgsz, None, True)
-    run("fp16 compile", a.batch, a.imgsz, mx.float16, True)
-    run("bf16 compile", a.batch, a.imgsz, mx.bfloat16, True)
+    run("fp32 eager", a.batch, a.imgsz, scale=a.scale)
+    run("fp32 compile", a.batch, a.imgsz, None, True, scale=a.scale)
+    run("fp16 compile", a.batch, a.imgsz, mx.float16, True, scale=a.scale)
+    run("bf16 compile", a.batch, a.imgsz, mx.bfloat16, True, scale=a.scale)
